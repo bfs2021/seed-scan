@@ -461,6 +461,12 @@ def _source(account: Account, where: str) -> _Source:
     """
     if not account.keys:
         key = _key(account, where)
+        # The addresses read are one level below a key of no purpose, and
+        # two below an account's: BIP32 stops at depth 255. Refuse here,
+        # as `_key` refuses one that does not decode, so that the public
+        # surface raises its own error, not the dependency's.
+        if key.depth + (1 if account.purpose is None else 2) > 255:
+            raise SeedScanValueError(f"bundle: {where}: an xpub too deep to derive")
         return key if account.purpose is None else key.derive(0)
     addresses: tuple[str, ...] = ()
     with contextlib.suppress(TypeError, ValueError):
@@ -908,8 +914,9 @@ def scan(
     Refused, as `seed_scan.bundle.loads` refuses it: text that is not a
     bundle. Refused as a `SeedScanValueError` too: a descriptor that
     does not parse, as one whose key is no point of the curve, an
-    extended public key that does not decode, a key of a layout held key
-    by key that is no point of the curve, accounts not numbered from 0,
+    extended public key that does not decode or is too deep to derive
+    the addresses read below it, a key of a layout held key by key that
+    is no point of the curve, accounts not numbered from 0,
     and a `server` that `parse_server` refuses. A bound below 1 is
     refused, and one that is no integer is a `SeedScanTypeError`, as is
     a `server` that is no string beside a `reader`. Refused once
@@ -1605,7 +1612,8 @@ def loads(text: str, bundle: str) -> ScanResult:
     """
     read = bundle_loads(bundle)
     # refused as `scan` refuses it: a descriptor or a key that does not
-    # parse, or accounts not numbered from 0 with no gap
+    # parse, a key too deep to derive, or accounts not numbered from 0
+    # with no gap
     for n, reading in enumerate(read.readings):
         _plan(n, reading)
     document = _document(text)

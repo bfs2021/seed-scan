@@ -55,6 +55,7 @@ from seed_scan.scan import (
     parse_server,
     scan,
 )
+from seed_scan.scan import loads as scan_loads
 
 from .evm_test import Ethereum, response
 from .identify_test import (
@@ -1015,6 +1016,83 @@ def test_an_ethereum_xpub_that_does_not_decode_is_refused(abandon: str) -> None:
     )
     assert caught.value.__context__ is None
     assert not fake.asked
+
+
+@pytest.mark.parametrize(
+    "path, purpose, depth, number",
+    [
+        ("m/44h/60h/0h", 44, 255, 20),
+        ("m/44h/60h/0h", 44, 254, 20),
+        ("m/44h/60h/0h", None, 255, 25),
+    ],
+)
+def test_an_ethereum_xpub_too_deep_to_derive_is_refused(
+    abandon: str, path: str, purpose: int | None, depth: int, number: int
+) -> None:
+    """A key too shallow to read the addresses below it is refused.
+
+    A key of no purpose is read one level below; an account's is read
+    two (`0/<index>`). BIP32 stops at depth 255, so both cases would
+    else leak the dependency's error. `scan`, `scan.loads` and `report`
+    refuse with `SeedScanValueError` before asking a node.
+    """
+    document = json.loads(abandon)
+    (account,) = [
+        a
+        for r in document["readings"]
+        for a in r["accounts"]
+        if a["path"] == path and a["purpose"] == purpose and a.get("xpub")
+    ]
+    data = BIP32KeyData.b58decode(account["xpub"], check_validity=False)
+    deep = BIP32KeyData(
+        data.version,
+        depth,
+        data.parent_fingerprint,
+        data.index,
+        data.chain_code,
+        data.key,
+        check_validity=False,
+    ).b58encode(check_validity=False)
+    # Pick by path and purpose: two accounts share this path, and the
+    # one with a purpose is refused first, so the legacy one is else
+    # never reached.
+    edited_document = json.loads(abandon)
+    for reading in edited_document["readings"]:
+        for candidate in reading["accounts"]:
+            if (
+                candidate["path"] == path
+                and candidate["purpose"] == purpose
+                and candidate.get("xpub")
+            ):
+                candidate["xpub"] = deep
+    text = json.dumps(edited_document)
+    loads(text)
+    fake = Ethereum()
+    with pytest.raises(SeedScanValueError) as caught:
+        scan(text, None, node=node(fake))
+    message = f"bundle: reading 0, account {number}: an xpub too deep to derive"
+    assert str(caught.value) == message
+    assert caught.value.__context__ is None
+    assert not fake.asked
+
+    empty = json.dumps(
+        {
+            "format": "seed-scan-scan",
+            "version": 1,
+            "bundle": "0" * 64,
+            "server": None,
+            "gap_limit": 20,
+            "account_gap": 5,
+            "searched": [],
+            "used": [],
+            "not_checked": [],
+            "evm": None,
+        }
+    )
+    with pytest.raises(SeedScanValueError, match="an xpub too deep to derive"):
+        scan_loads(empty, text)
+    with pytest.raises(SeedScanValueError, match="an xpub too deep to derive"):
+        report(text, empty)
 
 
 @pytest.mark.parametrize(
